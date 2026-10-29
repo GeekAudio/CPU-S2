@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     var cancelling = false
     private var lastAnnouncedPhase = -1
     private var resultSize = NSSize(width: 800, height: 920)
+    private var updater: UpdateManager?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.appearance = NSAppearance(named: .aqua)
@@ -46,17 +47,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                let seconds = Double(CommandLine.arguments[index + 1]), seconds.isFinite, seconds > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + min(120, seconds)) { if self.session != nil { self.toggleRun() } }
             }
+            return
         }
+        configureUpdates()
+        _ = UpdateInstallerCore.acknowledgeLaunch()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    func applicationWillTerminate(_ notification: Notification) { session?.cancel() }
+    func applicationWillTerminate(_ notification: Notification) { session?.cancel(); updater?.shutdown() }
 
     private func buildMenu() {
         let main = NSMenu()
         let application = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "关于 CPU-S2", action: #selector(about), keyEquivalent: "")
+        appMenu.addItem(withTitle: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
+        appMenu.addItem(withTitle: "自动下载并安装更新", action: #selector(toggleAutomaticUpdates), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "退出 CPU-S2", action: #selector(quit), keyEquivalent: "q")
         application.submenu = appMenu
@@ -80,8 +86,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(copyReport) || menuItem.action == #selector(exportReport) { return lastReport != nil }
-        if menuItem.action == #selector(toggleRun) { return !cancelling }
+        if menuItem.action == #selector(toggleRun) { return !cancelling && updater?.isInstalling != true }
+        if menuItem.action == #selector(checkForUpdates) { return updater != nil && updater?.isBusy != true }
+        if menuItem.action == #selector(toggleAutomaticUpdates) {
+            menuItem.state = updater?.automaticEnabled == true ? .on : .off
+            return updater != nil && updater?.isInstalling != true
+        }
         return true
+    }
+
+    private func configureUpdates() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? kAppVersion
+        guard let current = UpdateVersion.parse(version) else { return }
+        let updates = UpdateManager(currentVersion: current)
+        updater = updates
+        dashboard.automaticUpdatesEnabled = updates.automaticEnabled
+        dashboard.onCheckUpdates = { [weak updates] in updates?.check(manual: true) }
+        dashboard.onAutomaticUpdateChanged = { [weak updates] enabled in updates?.setAutomatic(enabled) }
+        updates.canInstall = { [weak self] in
+            guard let self = self else { return false }
+            return self.session == nil && self.window.attachedSheet == nil && NSApp.modalWindow == nil
+        }
+        updates.beforeInstall = { [weak self] in
+            guard let report = self?.lastReport else { return }
+            let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            let folder = support.appendingPathComponent("CPU-S2/Reports", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            let name = "更新前-\(dateText(Date(), compact: true))-\(UUID().uuidString.prefix(6)).json"
+            try ReportWriter.json(report).write(to: folder.appendingPathComponent(name), options: .atomic)
+        }
+        updates.onChange = { [weak self, weak updates] state in
+            guard let self = self else { return }
+            let hadNotice = self.dashboard.hasUpdateNotice
+            self.dashboard.showUpdate(message: state.message, progress: state.fraction)
+            self.dashboard.runButton.isEnabled = !self.cancelling && updates?.isInstalling != true
+            if hadNotice != self.dashboard.hasUpdateNotice {
+                self.resizeWindow(forResults: self.lastReport != nil, animated: false)
+            }
+        }
+        updates.onMessage = { [weak self] message in
+            guard let self = self, self.window.attachedSheet == nil else { return }
+            let alert = NSAlert()
+            alert.messageText = "软件更新"
+            alert.informativeText = message
+            alert.beginSheetModal(for: self.window)
+        }
+        updates.onWillRestart = { NSApp.terminate(nil) }
+        updates.start()
+    }
+
+    @objc private func checkForUpdates() { updater?.check(manual: true) }
+    @objc private func toggleAutomaticUpdates() {
+        guard let updater = updater else { return }
+        updater.setAutomatic(!updater.automaticEnabled)
+        dashboard.automaticUpdatesEnabled = updater.automaticEnabled
     }
     @objc private func quit() { NSApp.terminate(nil) }
     @objc private func about() {
@@ -102,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func start() {
-        guard session == nil else { return }
+        guard session == nil, updater?.isInstalling != true else { return }
         let current = Engine.Session()
         let device = DeviceSnapshot.read()
         let source = dashboard.selectedSampler
@@ -141,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
                     self.announce("检测完成")
                 }
                 self.resizeWindow(forResults: self.lastReport != nil)
+                self.updater?.installIfReady()
                 if CommandLine.arguments.contains("--selftest") { self.snapshots() }
             }
         }

@@ -12,7 +12,7 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '2.4.4'
+VERSION = '2.5.0'
 
 
 def run(*args):
@@ -35,18 +35,31 @@ def build(output):
         resources = app / 'Contents' / 'Resources'
         resources.mkdir()
         bins = []
+        helper_bins = []
         for arch in ['x86_64', 'arm64']:
             print(f'编译 {arch}', flush=True)
             obj = stage / f'probe-{arch}.o'
             binary = stage / f'CPU-S2-{arch}'
+            helper_binary = stage / f'CPU-S2UpdaterHelper-{arch}'
+            run('xcrun', 'swiftc', '-O', '-warnings-as-errors', '-swift-version', '5', '-parse-as-library',
+                '-target', f'{arch}-apple-macos11.0', '-o', helper_binary,
+                ROOT / 'Sources/UpdateInstallerCore.swift', ROOT / 'Sources/UpdaterHelper/main.swift',
+                '-framework', 'Foundation')
+            helper_bins.append(helper_binary)
             run('xcrun', 'clang', '-O2', '-Wall', '-Wextra', '-Werror', '-arch', arch,
                 '-mmacosx-version-min=11.0', '-c', ROOT / 'Sources/Probe.c', '-o', obj)
             sources = [ROOT / 'Sources/main.swift'] + sorted(path for path in (ROOT / 'Sources').glob('*.swift') if path.name != 'main.swift')
             run('xcrun', 'swiftc', '-O', '-warnings-as-errors', '-swift-version', '5', '-target',
                 f'{arch}-apple-macos11.0', '-o', binary, *sources, obj,
-                '-framework', 'AppKit', '-framework', 'Foundation', '-framework', 'IOKit')
+                '-framework', 'AppKit', '-framework', 'Foundation', '-framework', 'IOKit',
+                '-framework', 'CryptoKit', '-lz')
             bins.append(binary)
         run('lipo', '-create', *bins, '-output', executable)
+        helper = app / 'Contents/Helpers/CPU-S2UpdaterHelper'
+        helper.parent.mkdir()
+        run('lipo', '-create', *helper_bins, '-output', helper)
+        run('codesign', '--force', '--sign', '-', helper)
+        run('codesign', '--verify', '--strict', '--all-architectures', helper)
         shutil.copyfile(ROOT / 'Resources/AppIcon.icns', resources / 'AppIcon.icns')
         info = {
             'CFBundleName': 'CPU-S2', 'CFBundleDisplayName': 'CPU-S2',
@@ -59,7 +72,7 @@ def build(output):
         with (app / 'Contents/Info.plist').open('wb') as stream:
             plistlib.dump(info, stream)
         run('codesign', '--force', '--sign', '-', app)
-        run('codesign', '--verify', '--strict', app)
+        run('codesign', '--verify', '--deep', '--strict', '--all-architectures', app)
         # ditto avoids Finder/resource-fork metadata from synced workspace locations.
         with tempfile.TemporaryDirectory(prefix='.publish-', dir=output) as publish:
             ready = Path(publish) / app.name
@@ -92,6 +105,7 @@ def build(output):
 def package(output, skip_build=False):
     app = output / "CPU-S2.app" if skip_build else build(output)
     destination = output / f'CPU-S2-v{VERSION}.dmg'
+    zip_destination = output / f'CPU-S2-v{VERSION}.zip'
     with tempfile.TemporaryDirectory(prefix='cpus2-package-') as folder:
         stage = Path(folder)
         contents = stage / 'contents'
@@ -101,7 +115,12 @@ def package(output, skip_build=False):
             if plistlib.load(stream).get('CFBundleShortVersionString') != VERSION:
                 raise RuntimeError('Package app version differs from release version; rebuild first')
         strip_finder_metadata(contents / app.name)
-        run('codesign', '--verify', '--strict', contents / app.name)
+        run('codesign', '--verify', '--deep', '--strict', '--all-architectures', contents / app.name)
+        helper = contents / app.name / 'Contents/Helpers/CPU-S2UpdaterHelper'
+        if not helper.is_file():
+            raise RuntimeError('Application is missing its automatic update helper')
+        archive = stage / zip_destination.name
+        run('ditto', '-c', '-k', '--keepParent', '--norsrc', '--noextattr', '--noacl', contents / app.name, archive)
         shutil.copyfile(ROOT / '使用说明.txt', contents / '使用说明.txt')
         (contents / 'Applications').symlink_to('/Applications')
         image = stage / destination.name
@@ -109,14 +128,22 @@ def package(output, skip_build=False):
             '-format', 'UDZO', image)
         run('hdiutil', 'verify', image)
         # Copy to a sibling temporary file before the atomic final rename.
-        with tempfile.NamedTemporaryFile(prefix='.dmg-', dir=output, delete=False) as stream:
-            temporary = Path(stream.name)
-        try:
-            shutil.copyfile(image, temporary)
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
+        for source, target in [(image, destination), (archive, zip_destination)]:
+            with tempfile.NamedTemporaryFile(prefix='.release-', dir=output, delete=False) as stream:
+                temporary = Path(stream.name)
+            try:
+                shutil.copyfile(source, temporary)
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+        sums = ''.join(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n'
+                       for path in [destination, zip_destination])
+        with tempfile.NamedTemporaryFile(mode='w', prefix='.checksums-', dir=output, delete=False) as stream:
+            stream.write(sums)
+            checksum_file = Path(stream.name)
+        os.replace(checksum_file, output / 'SHA256SUMS.txt')
         print(f'打包完成：{destination}')
+        print(f'自动更新 ZIP：{zip_destination}')
 
 
 if __name__ == '__main__':

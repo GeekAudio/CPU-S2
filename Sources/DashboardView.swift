@@ -5,6 +5,9 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     var onRun: (() -> Void)?
     var onCopy: (() -> Void)?
     var onExport: (() -> Void)?
+    var onCheckUpdates: (() -> Void)?
+    var onAutomaticUpdateChanged: ((Bool) -> Void)?
+    var automaticUpdatesEnabled = true
     let runButton = NSButton(title: "开始检测", target: nil, action: nil)
     let navigation = NSSegmentedControl(labels: ["检测概览", "频率详情"], trackingMode: .selectOne, target: nil, action: nil)
     let stagePicker = NSSegmentedControl(labels: ["轻载", "单线程", "多线程"], trackingMode: .selectOne, target: nil, action: nil)
@@ -31,6 +34,9 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     let tierTable = NSTableView()
     let status = NSTextField(labelWithString: "频率为估算读数，适合观察变化；不承诺绝对精度。")
     private let fixed = NSStackView()
+    private let updateBox = NSStackView()
+    private let updateLabel = NSTextField(labelWithString: "")
+    private let updateProgress = MutedProgressIndicator()
     private var deviceInfo: DeviceInfoView!
     private var tools: NSStackView!
     private var metricsRow: NSStackView!
@@ -82,6 +88,7 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         return max(230, fixed.fittingSize.height + 40)
     }
     var hasData: Bool { report?.validCount ?? 0 > 0 }
+    var hasUpdateNotice: Bool { !updateBox.isHidden }
 
     private func build() {
         fixed.orientation = .vertical
@@ -110,21 +117,35 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
             button.bezelStyle = .rounded
             button.font = .systemFont(ofSize: 12)
         }
-        settingsButton.title = availableSources.count > 1 ? "设置" : "说明"
-        settingsButton.image = NSImage(systemSymbolName: availableSources.count > 1 ? "gearshape" : "info.circle", accessibilityDescription: "检测设置与说明")
+        settingsButton.title = "设置"
+        settingsButton.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "检测设置与软件更新")
         settingsButton.imagePosition = .imageLeading
         settingsButton.imageHugsTitle = true
         settingsButton.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
         settingsButton.widthAnchor.constraint(greaterThanOrEqualToConstant: 76).isActive = true
         settingsButton.setContentCompressionResistancePriority(.required, for: .horizontal)
-        settingsButton.toolTip = "检测设置与说明"
+        settingsButton.toolTip = "检测设置与软件更新"
         for button in [copyButton, exportButton, settingsButton] {
             button.attributedTitle = NSAttributedString(string: button.title, attributes: [
                 .font: NSFont.systemFont(ofSize: 12), .foregroundColor: DashboardColors.bodyText
             ])
         }
         tools = row([navigation, spacer(), copyButton, exportButton])
-        [header, deviceInfo!, tools!].forEach { fixed.addArrangedSubview($0); $0.widthAnchor.constraint(equalTo: fixed.widthAnchor).isActive = true }
+        updateBox.orientation = .horizontal
+        updateBox.alignment = .centerY
+        updateBox.spacing = 12
+        updateLabel.font = .systemFont(ofSize: 12)
+        updateLabel.textColor = DashboardColors.secondaryText
+        updateLabel.lineBreakMode = .byTruncatingTail
+        updateLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        updateProgress.isIndeterminate = false
+        updateProgress.minValue = 0; updateProgress.maxValue = 1
+        updateProgress.widthAnchor.constraint(equalToConstant: 120).isActive = true
+        updateProgress.setAccessibilityLabel("更新下载进度")
+        updateBox.addArrangedSubview(updateLabel)
+        updateBox.addArrangedSubview(updateProgress)
+        updateBox.isHidden = true
+        [header, updateBox, deviceInfo!, tools!].forEach { fixed.addArrangedSubview($0); $0.widthAnchor.constraint(equalTo: fixed.widthAnchor).isActive = true }
         progressBox.orientation = .vertical
         progressBox.alignment = .leading
         progressBox.spacing = 6
@@ -237,6 +258,14 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     func updateDevice(_ value: DeviceSnapshot) {
         device = value
         deviceInfo.update(device: value)
+    }
+
+    func showUpdate(message: String?, progress: Double?) {
+        updateBox.isHidden = message == nil
+        updateLabel.stringValue = message ?? ""
+        updateLabel.toolTip = message
+        updateProgress.isHidden = progress == nil
+        updateProgress.doubleValue = progress ?? 0
     }
 
     private func showResults(_ visible: Bool) {
@@ -379,11 +408,21 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
         let content = NSStackView()
         content.orientation = .vertical; content.alignment = .leading; content.spacing = 14
         content.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        content.addArrangedSubview(text(availableSources.count > 1 ? "检测设置" : "测量说明", size: 15, weight: .medium, color: DashboardColors.primaryText))
+        content.addArrangedSubview(text("检测设置", size: 15, weight: .medium, color: DashboardColors.primaryText))
         if availableSources.count > 1 { content.addArrangedSubview(sourcePopup) }
         content.addArrangedSubview(text("内建探针通过指令链计时估算频率。轻载也会唤醒核心，不能用来证明真正空闲时的频率。", size: 12, color: DashboardColors.secondaryText, wrapping: true))
         if availableSources.count > 1 { content.addArrangedSubview(text("PowerLog 仅兼容已有安装，已停止维护。单线程读数仍使用探针。", size: 12, color: DashboardColors.secondaryText, wrapping: true)) }
-        content.addArrangedSubview(text(device.description, size: 11, color: DashboardColors.secondaryText, wrapping: true))
+        content.addArrangedSubview(text("\(device.processor)\n\(device.model) · \(device.system)\n\(device.brief)", size: 11, color: DashboardColors.secondaryText, wrapping: true))
+        content.addArrangedSubview(text("软件更新", size: 14, weight: .medium, color: DashboardColors.primaryText))
+        let automatic = NSButton(checkboxWithTitle: "自动下载更新并重启", target: self, action: #selector(changeAutomaticUpdates(_:)))
+        automatic.state = automaticUpdatesEnabled ? .on : .off
+        automatic.attributedTitle = NSAttributedString(string: automatic.title, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: DashboardColors.bodyText])
+        content.addArrangedSubview(automatic)
+        let check = NSButton(title: "检查更新…", target: self, action: #selector(checkUpdates))
+        check.bezelStyle = .rounded
+        check.attributedTitle = NSAttributedString(string: check.title, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: DashboardColors.bodyText])
+        content.addArrangedSubview(check)
+        content.addArrangedSubview(text("从 GitHub Release 获取更新；检测运行期间会暂缓重启。", size: 11, color: DashboardColors.secondaryText, wrapping: true))
         for item in content.arrangedSubviews { item.widthAnchor.constraint(equalToConstant: 320).isActive = true }
         let controller = NSViewController()
         controller.view = content
@@ -398,6 +437,11 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     @objc private func run() { onRun?() }
     @objc private func copySummary() { onCopy?() }
     @objc private func export() { onExport?() }
+    @objc private func checkUpdates() { settingsPopover?.close(); onCheckUpdates?() }
+    @objc private func changeAutomaticUpdates(_ sender: NSButton) {
+        automaticUpdatesEnabled = sender.state == .on
+        onAutomaticUpdateChanged?(automaticUpdatesEnabled)
+    }
 
     func numberOfRows(in tableView: NSTableView) -> Int { tableView === phaseTable ? report?.run.phases.count ?? 0 : tiers.count }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row index: Int) -> NSView? {

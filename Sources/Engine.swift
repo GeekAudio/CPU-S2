@@ -5,7 +5,7 @@ import IOKit.pwr_mgt
 // MARK: - 全局常量
 
 let kAppName = "CPU-S2"
-let kAppVersion = "2.4.4"
+let kAppVersion = "2.5.0"
 let kResolutionMs = 100            // 采样间隔（毫秒）
 let kLoadWarmup = 1.2              // 加压后先等这么久再开始计数
 let kPowerLog = "/Applications/Intel Power Gadget/PowerLog"

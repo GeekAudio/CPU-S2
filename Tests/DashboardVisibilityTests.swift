@@ -119,13 +119,30 @@ enum DashboardVisibilityTests {
 
     static func runChecks(_ view: DashboardView) {
         let complete = report([[1800, 2200, 2800], [4400, 4500, 4600], [3900, 4000, 4100]])
-        let progress = descendants(view).compactMap { $0 as? NSProgressIndicator }.first!
+        let indicators = descendants(view).compactMap { $0 as? NSProgressIndicator }
+        let updateProgress = indicators.first { $0.accessibilityLabel() == "更新下载进度" }!
+        let progress = indicators.first { $0.accessibilityLabel() == "检测进度" }!
+        let updateBox = updateProgress.superview!
+        let updateNotice = updateBox.subviews.compactMap { $0 as? NSTextField }.first!
 
         view.render(nil)
         resultControlsHidden(view, context: "initial")
         expect(!visible(progress), "initial progress must stay hidden")
+        expect(!visible(updateBox), "update notice row is hidden by default")
+        expect(!visible(updateNotice) && !visible(updateProgress), "empty update state exposes no placeholder or progress")
         expect(visible(view.runButton) && view.runButton.title == "开始检测", "initial start button")
         deviceFields(view)
+
+        view.showUpdate(message: "正在检查更新…", progress: nil)
+        expect(visible(updateBox) && visible(updateNotice), "update notice appears after a message arrives")
+        expect(updateNotice.stringValue == "正在检查更新…", "update notice shows the supplied message")
+        expect(!visible(updateProgress), "checking notice hides the numeric download bar")
+        view.showUpdate(message: "正在下载更新 · 35%", progress: 0.35)
+        expect(visible(updateBox) && visible(updateNotice) && visible(updateProgress), "download notice and its progress are visible")
+        expect(updateProgress.doubleValue == 0.35, "download progress displays the supplied fraction")
+        view.showUpdate(message: nil, progress: nil)
+        expect(!visible(updateBox) && !visible(updateNotice) && !visible(updateProgress), "clearing update state hides the whole row")
+
         view.selectPage(1)
         resultControlsHidden(view, context: "empty detail selection")
 
@@ -134,7 +151,15 @@ enum DashboardVisibilityTests {
                                          elapsed: 2, duration: 8, warmup: false, message: ""), hasHistory: false)
         resultControlsHidden(view, context: "first running")
         expect(visible(progress), "running progress is visible")
+        expect(progress.doubleValue == 0.4, "detection progress shows the sampling fraction")
         expect(visible(view.runButton) && view.runButton.title == "停止检测", "running stop button")
+        view.showUpdate(message: "正在下载更新 · 65%", progress: 0.65)
+        expect(updateProgress.doubleValue == 0.65, "download progress shows its own fraction during a run")
+        expect(progress.doubleValue == 0.4, "download progress does not overwrite detection progress")
+        view.showProgress(Engine.Progress(phaseIndex: 1, phaseLabel: "单线程计算", completedFraction: 0.72,
+                                         elapsed: 5, duration: 8, warmup: false, message: ""), hasHistory: false)
+        expect(progress.doubleValue == 0.72, "detection progress advances independently")
+        expect(updateProgress.doubleValue == 0.65, "detection progress does not overwrite download progress")
         view.selectPage(1)
         resultControlsHidden(view, context: "running detail selection")
         deviceFields(view)
