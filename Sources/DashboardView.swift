@@ -405,31 +405,22 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     }
 
     @objc private func settings() {
-        let content = NSStackView()
-        content.orientation = .vertical; content.alignment = .leading; content.spacing = 14
-        content.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        content.addArrangedSubview(text("检测设置", size: 15, weight: .medium, color: DashboardColors.primaryText))
-        if availableSources.count > 1 { content.addArrangedSubview(sourcePopup) }
-        content.addArrangedSubview(text("内建探针通过指令链计时估算频率。轻载也会唤醒核心，不能用来证明真正空闲时的频率。", size: 12, color: DashboardColors.secondaryText, wrapping: true))
-        if availableSources.count > 1 { content.addArrangedSubview(text("PowerLog 仅兼容已有安装，已停止维护。单线程读数仍使用探针。", size: 12, color: DashboardColors.secondaryText, wrapping: true)) }
-        content.addArrangedSubview(text("\(device.processor)\n\(device.model) · \(device.system)\n\(device.brief)", size: 11, color: DashboardColors.secondaryText, wrapping: true))
-        content.addArrangedSubview(text("软件更新", size: 14, weight: .medium, color: DashboardColors.primaryText))
-        let automatic = NSButton(checkboxWithTitle: "自动下载更新并重启", target: self, action: #selector(changeAutomaticUpdates(_:)))
-        automatic.state = automaticUpdatesEnabled ? .on : .off
-        automatic.attributedTitle = NSAttributedString(string: automatic.title, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: DashboardColors.bodyText])
-        content.addArrangedSubview(automatic)
-        let check = NSButton(title: "检查更新…", target: self, action: #selector(checkUpdates))
-        check.bezelStyle = .rounded
-        check.attributedTitle = NSAttributedString(string: check.title, attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: DashboardColors.bodyText])
-        content.addArrangedSubview(check)
-        content.addArrangedSubview(text("从 GitHub Release 获取更新；检测运行期间会暂缓重启。", size: 11, color: DashboardColors.secondaryText, wrapping: true))
-        for item in content.arrangedSubviews { item.widthAnchor.constraint(equalToConstant: 320).isActive = true }
-        let controller = NSViewController()
-        controller.view = content
+        let controller = SettingsViewController(
+            sourcePopup: availableSources.count > 1 ? sourcePopup : nil,
+            deviceSummary: "\(device.processor)\n\(device.model) · \(device.system)\n\(device.brief)",
+            automaticUpdatesEnabled: automaticUpdatesEnabled,
+            onCheckUpdates: { [weak self] in self?.checkUpdates() },
+            onAutomaticUpdateChanged: { [weak self] enabled in self?.setAutomaticUpdatesEnabled(enabled) })
+        let naturalHeight = controller.naturalHeight
+        let screenHeight = settingsButton.window?.screen?.visibleFrame.height
+            ?? NSScreen.main?.visibleFrame.height
+            ?? 800
+        let height = min(naturalHeight, max(1, screenHeight - 100))
+        controller.setViewportHeight(height)
         let popover = NSPopover()
         popover.contentViewController = controller
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 360, height: content.fittingSize.height)
+        popover.contentSize = NSSize(width: SettingsViewController.panelWidth, height: height)
         settingsPopover = popover
         popover.show(relativeTo: settingsButton.bounds, of: settingsButton, preferredEdge: .minY)
     }
@@ -439,7 +430,10 @@ final class DashboardView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     @objc private func export() { onExport?() }
     @objc private func checkUpdates() { settingsPopover?.close(); onCheckUpdates?() }
     @objc private func changeAutomaticUpdates(_ sender: NSButton) {
-        automaticUpdatesEnabled = sender.state == .on
+        setAutomaticUpdatesEnabled(sender.state == .on)
+    }
+    private func setAutomaticUpdatesEnabled(_ enabled: Bool) {
+        automaticUpdatesEnabled = enabled
         onAutomaticUpdateChanged?(automaticUpdatesEnabled)
     }
 

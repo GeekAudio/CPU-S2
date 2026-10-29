@@ -96,6 +96,61 @@ enum DashboardVisibilityTests {
         }
     }
 
+    static func settingsLayout() {
+        let source = NSPopUpButton()
+        source.addItems(withTitles: ["内建探针估算", "已有 PowerLog（兼容模式）"])
+        let summary = "Intel(R) Core(TM) i9-13900K CPU @ 3.00GHz\nMacPro7,1 · macOS 26.1.0 (25B5023a)\n标称 8 大核 + 16 小核 · 24 核 / 32 线程 · 标称基频 3.00 GHz"
+        var checkUpdatesCalled = false
+        var automaticUpdateValue: Bool?
+        let settings = SettingsViewController(
+            sourcePopup: source,
+            deviceSummary: summary,
+            automaticUpdatesEnabled: true,
+            onCheckUpdates: { checkUpdatesCalled = true },
+            onAutomaticUpdateChanged: { automaticUpdateValue = $0 })
+        let naturalHeight = settings.naturalHeight
+        settings.setViewportHeight(naturalHeight)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsViewController.panelWidth, height: naturalHeight),
+                              styleMask: .borderless, backing: .buffered, defer: false)
+        window.contentView = settings.view
+        settings.view.layoutSubtreeIfNeeded()
+
+        let labels = descendants(settings.view).compactMap { $0 as? NSTextField }
+        for title in ["检测来源", "软件更新", "本机摘要"] {
+            expect(labels.contains { visible($0) && $0.stringValue == title }, "settings shows the \(title) group")
+        }
+        expect(descendants(settings.view).contains { $0 === source }, "settings keeps the shared source selector")
+        expect(settings.contentStack.frame.minX >= 20, "settings content has a clear leading inset")
+        if let document = settings.contentStack.superview {
+            expect(document.bounds.width - settings.contentStack.frame.maxX >= 20,
+                   "settings content has a clear trailing inset")
+        } else {
+            expect(false, "settings content has a document wrapper")
+        }
+        expect(abs(settings.manualCheckButton.frame.width - 132) < 1,
+               "manual update button uses a compact fixed width")
+        expect(settings.localSummary.isSelectable && settings.localSummary.maximumNumberOfLines == 0,
+               "local summary wraps and remains copyable")
+        expect(settings.localSummary.stringValue == summary, "local summary preserves the complete hardware text")
+        expect(naturalHeight < 600, "settings content stays compact on a normal display")
+        if naturalHeight > 220 {
+            settings.setViewportHeight(220)
+            expect(abs(settings.view.frame.height - 220) < 1,
+                   "settings viewport can shrink for a short display")
+            expect((settings.contentStack.superview?.frame.height ?? 0) >= naturalHeight - 1,
+                   "settings content remains scrollable when the viewport is clamped")
+            settings.setViewportHeight(naturalHeight)
+        }
+
+        settings.automaticUpdateButton.state = .on
+        settings.automaticUpdateButton.performClick(nil)
+        expect(automaticUpdateValue == false, "automatic-update checkbox preserves its callback")
+        settings.manualCheckButton.performClick(nil)
+        expect(checkUpdatesCalled, "manual update button preserves its callback")
+        window.contentView = nil
+        window.close()
+    }
+
     static func main() {
         _ = NSApplication.shared
         NSApp.setActivationPolicy(.prohibited)
@@ -105,6 +160,7 @@ enum DashboardVisibilityTests {
         window.isReleasedWhenClosed = false
         window.contentView = view
         view.layoutSubtreeIfNeeded()
+        settingsLayout()
         runChecks(view)
         window.contentView = nil
         window.close()

@@ -12,6 +12,11 @@ struct UpdateVersion: Comparable, CustomStringConvertible {
     var description: String { "\(major).\(minor).\(patch)" }
     var tag: String { "v\(description)" }
 
+    static func parseBundleVersion(_ value: String?) -> UpdateVersion? {
+        guard let value = value, !value.hasPrefix("v") else { return nil }
+        return parse("v" + value)
+    }
+
     static func parse(_ value: String?) -> UpdateVersion? {
         guard let value = value, value.utf8.count <= 60, value.first == "v" else { return nil }
         let components = value.dropFirst().split(separator: ".", omittingEmptySubsequences: false)

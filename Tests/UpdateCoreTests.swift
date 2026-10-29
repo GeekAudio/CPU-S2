@@ -27,6 +27,9 @@ enum UpdateCoreTests {
     }
 
     private static func versionChecks() {
+        expect(UpdateVersion.parseBundleVersion("2.5.1")?.description == "2.5.1", "bundle versions initialize the updater without a release-tag prefix")
+        expect(UpdateVersion.parseBundleVersion("v2.5.1") == nil, "bundle version parsing does not accept a release tag")
+        expect(UpdateVersion.parseBundleVersion("2.05.1") == nil, "bundle versions retain strict numeric validation")
         guard let current = UpdateVersion.parse("v2.4.4"),
               let earlier = UpdateVersion.parse("v2.4.9"),
               let newer = UpdateVersion.parse("v2.5.0"),

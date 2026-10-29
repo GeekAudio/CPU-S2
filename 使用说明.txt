@@ -1,4 +1,4 @@
-CPU-S2 v2.5.0 —— 本机 CPU 频率观察
+CPU-S2 v2.5.1 —— 本机 CPU 频率观察
 
 【安装】
 把 CPU-S2.app 拖进「应用程序」。支持 macOS 11 起，含 Intel / Apple Silicon 通用二进制。
@@ -56,16 +56,18 @@ GitHub 应用 ZIP，校验 SHA-256、应用版本、架构与签名完整性，�
   ~/Library/Logs/CPU-S2/Updater.log
 可在「设置」或「CPU-S2」菜单检查更新、关闭自动下载与重启。在只读 DMG 中运行时，
 请先把应用复制到「应用程序」。更新仅访问公开 GitHub，不使用本机 token、不上传检测数据。
+GitHub API 限流时会改用公开 Release 地址及 SHA256SUMS.txt，继续执行完整安装包校验。
 
 【开发与界面检查】
 编译需要 Xcode 命令行工具和 Python 3。在源码目录运行：
   ./Tests/run.sh   61 项引擎、169 项报告与 29 项核心拓扑无负载回归，涵盖统计、CSV 解析和取消流程
-  ./Tests/run-ui.sh  220 项无负载界面状态与机型字段检查
+  ./Tests/run-ui.sh  234 项无负载界面状态与机型字段检查
   ./Tests/run-update.sh  版本、Release、SHA-256 与安全 ZIP 校验
+  ./Tests/run-update-fallback.sh  限流备用地址与校验清单检查
   ./Tests/run-installer.sh  临时应用中的安装、回滚与启动确认
   ./Tests/run-update-manager.sh  离线更新生命周期与取消检查
   ./build.sh       构建并签名通用 app；校验后发布，归档旧版 app
-  ./package.sh     生成 DMG、CPU-S2-v2.5.0.zip 和 SHA256SUMS.txt
+  ./package.sh     生成 DMG、CPU-S2-v2.5.1.zip 和 SHA256SUMS.txt
 
   CPU-S2 --preview    使用固定示例数据检查布局，不产生检测负载
   CPU-S2 --selftest   实际运行整轮计算负载，写界面快照后退出

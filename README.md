@@ -1,4 +1,4 @@
-# CPU-S2 v2.5.0
+# CPU-S2 v2.5.1
 
 Mac / 黑苹果上的 CPU 频率观察工具。在本机运行轻载、单线程和多线程检测，查看频率估算、阶段统计与频率分布。
 
@@ -22,6 +22,8 @@ Intel 的「核心 / 线程」分两行显示大核（P）、小核（E）和系
 ## 自动更新
 
 默认启用自动更新：启动后检查 GitHub 最新正式 Release，应用持续运行时每 6 小时复查；启动检查在 1 小时内复用上次成功检查时间。发现新版后自动下载 `CPU-S2-v版本号.zip`，核对 GitHub 提供的 SHA-256、ZIP 内容、应用版本、架构和签名完整性，然后替换并重启。
+
+GitHub API 限流或网络暂时无法访问 API 时，会改用公开 Release 地址及该版本的 `SHA256SUMS.txt`；两条路径均固定为本项目仓库并执行相同的安装包校验。
 
 检测、导出或其他模态操作尚未结束时，会先保留已下载更新，结束后再安装。重启前会把当前完整检测报告保存到 `~/Library/Application Support/CPU-S2/Reports/`。更新器等待旧进程退出，保留旧应用备份，并确认新版启动；替换或启动失败时恢复旧版。失败记录位于 `~/Library/Logs/CPU-S2/Updater.log`。
 
@@ -76,8 +78,9 @@ Intel 的判定门槛为 `基频 + max(100 MHz, 基频 × 5%)`。5% / 100 MHz �
 
 ```bash
 ./Tests/run.sh     # 无负载回归：61 项引擎检查、169 项报告检查、29 项核心拓扑检查
-./Tests/run-ui.sh  # 220 项界面状态与机型字段检查，不加压
+./Tests/run-ui.sh  # 234 项界面状态与机型字段检查，不加压
 ./Tests/run-update.sh          # 版本、GitHub 元数据、SHA-256、ZIP 边界与解压校验
+./Tests/run-update-fallback.sh # Release 地址与校验清单的限流备用路径
 ./Tests/run-installer.sh       # 私有临时应用中的替换、回滚与启动确认
 ./Tests/run-update-manager.sh  # 离线网络生命周期与取消流程
 ./build.sh         # 编译并签名，产出 build/CPU-S2.app 通用应用

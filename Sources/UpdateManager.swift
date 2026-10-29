@@ -35,6 +35,14 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
     private var session: URLSession!
     private var feedTask: URLSessionDataTask?
     private var downloadTask: URLSessionDownloadTask?
+    private var latestTask: URLSessionDataTask?
+    private var checksumTask: URLSessionDataTask?
+    private var sizeTask: URLSessionDataTask?
+    private var fallbackData = Data()
+    private var fallbackVersion: UpdateVersion?
+    private var fallbackSHA: String?
+    private var fallbackResolved = false
+    private var useFallback = false
     private var extractionProcess: Process?
     private var feedData = Data()
     private var feedResponseOK = false
@@ -87,6 +95,8 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
         generation = UUID()
         periodicCheck?.invalidate(); installWait?.invalidate()
         stopExtraction()
+        cancelFallbackTasks()
+        feedTask = nil; downloadTask = nil
         session.invalidateAndCancel()
         // The independent installer owns the prepared bundle once it has acknowledged READY.
         if !isInstalling { removeWorkingDirectory() }
@@ -111,7 +121,7 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
         manual = requested
         generation = UUID()
         removeWorkingDirectory()
-        feedData.removeAll(keepingCapacity: false); feedResponseOK = false
+        feedData.removeAll(keepingCapacity: false); feedResponseOK = false; useFallback = false
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/GeekAudio/CPU-S2/releases/latest")!)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
@@ -125,6 +135,7 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
     private func cancelPending() {
         generation = UUID()
         feedTask?.cancel(); downloadTask?.cancel()
+        cancelFallbackTasks()
         feedTask = nil; downloadTask = nil
         stopExtraction()
         installWait?.invalidate(); installWait = nil
@@ -135,6 +146,7 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
 
     private func fail(_ message: String) {
         feedTask?.cancel(); downloadTask?.cancel()
+        cancelFallbackTasks()
         feedTask = nil; downloadTask = nil
         stopExtraction()
         installWait?.invalidate(); installWait = nil
@@ -146,6 +158,34 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if dataTask === latestTask {
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let url = response.url, let version = UpdateFallback.version(fromReleaseURL: url) {
+                fallbackResolved = true; fallbackVersion = version
+            }
+            completionHandler(.cancel)
+            return
+        }
+        if dataTask === checksumTask {
+            let valid = (response as? HTTPURLResponse)?.statusCode == 200 && response.expectedContentLength <= 65_536
+            completionHandler(valid ? .allow : .cancel)
+            return
+        }
+        if dataTask === sizeTask {
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let version = fallbackVersion, let hash = fallbackSHA,
+               response.expectedContentLength > 0, response.expectedContentLength <= UpdateFeed.maximumArchiveSize {
+                sizeTask = nil
+                completionHandler(.cancel)
+                beginDownload(ReleaseUpdate(version: version, assetURL: UpdateFallback.assetURL(for: version),
+                                            sha256: hash, size: response.expectedContentLength,
+                                            releaseURL: URL(string: "https://github.com/GeekAudio/CPU-S2/releases/tag/\(version.tag)")!, releaseID: 0))
+                return
+            }
+            completionHandler(.cancel)
+            return
+        }
+        if dataTask === feedTask, let http = response as? HTTPURLResponse, [403, 429].contains(http.statusCode) { useFallback = true }
         guard dataTask === feedTask, let http = response as? HTTPURLResponse,
               http.statusCode == 200, response.expectedContentLength <= Int64(maximumFeedBytes) else {
             completionHandler(.cancel)
@@ -156,6 +196,11 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        if dataTask === checksumTask {
+            guard fallbackData.count + data.count <= 65_536 else { fail("更新校验清单过大，已停止更新。"); return }
+            fallbackData.append(data)
+            return
+        }
         guard dataTask === feedTask else { return }
         guard feedData.count + data.count <= maximumFeedBytes else {
             fail("更新信息过大，请稍后重试。")
@@ -169,13 +214,19 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
         guard let url = request.url, url.scheme == "https", url.user == nil, url.password == nil,
               url.port == nil || url.port == 443 else { completionHandler(nil); return }
         if task === feedTask { completionHandler(url.host == "api.github.com" ? request : nil); return }
+        if task === latestTask {
+            completionHandler(UpdateFallback.version(fromReleaseURL: url) != nil ? request : nil)
+            return
+        }
         let hosts = ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com", "github-releases.githubusercontent.com"]
-        completionHandler(task === downloadTask && hosts.contains(url.host ?? "") ? request : nil)
+        let assetTask = task === downloadTask || task === checksumTask || task === sizeTask
+        completionHandler(assetTask && hosts.contains(url.host ?? "") ? request : nil)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if task === feedTask {
             feedTask = nil
+            if useFallback || error != nil { startFallback(); return }
             guard error == nil, feedResponseOK else { fail("暂时无法检查更新，可从 CPU-S2 菜单重试。"); return }
             do {
                 let candidate = try UpdateFeed.parse(data: feedData, currentVersion: currentVersion)
@@ -186,20 +237,73 @@ final class UpdateManager: NSObject, URLSessionDataDelegate, URLSessionDownloadD
                     if manual { onMessage?("当前 v\(currentVersion)，没有可安装的新版。") }
                     return
                 }
-                release = candidate
-                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cpus2-update-\(UUID().uuidString)", isDirectory: true)
-                try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-                workingDirectory = folder
-                state = .downloading(0)
-                var request = URLRequest(url: candidate.assetURL)
-                request.setValue("CPU-S2/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-                downloadTask = session.downloadTask(with: request)
-                downloadTask?.resume()
+                beginDownload(candidate)
             } catch { fail("更新信息无法验证：\(error.localizedDescription)") }
+        } else if task === latestTask {
+            latestTask = nil
+            guard fallbackResolved, let version = fallbackVersion else { fail("暂时无法检查更新，可从 CPU-S2 菜单重试。"); return }
+            guard version > currentVersion else { noUpdate(); return }
+            fallbackData.removeAll(keepingCapacity: false)
+            checksumTask = session.dataTask(with: publicRequest(UpdateFallback.checksumsURL(for: version)))
+            checksumTask?.resume()
+        } else if task === checksumTask {
+            checksumTask = nil
+            guard error == nil, let version = fallbackVersion else { fail("暂时无法读取更新校验清单。"); return }
+            do {
+                guard let hash = try UpdateFallback.checksum(from: fallbackData, version: version) else { noUpdate(); return }
+                fallbackSHA = hash
+                var request = publicRequest(UpdateFallback.assetURL(for: version))
+                request.httpMethod = "HEAD"
+                sizeTask = session.dataTask(with: request)
+                sizeTask?.resume()
+            } catch { fail("更新校验清单无法验证。") }
+        } else if task === sizeTask {
+            sizeTask = nil
+            fail("无法确定更新文件大小，已保持当前版本。")
         } else if task === downloadTask, error != nil {
             downloadTask = nil
             fail("更新下载未完成，请稍后重试。")
         }
+    }
+
+    private func publicRequest(_ url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("CPU-S2/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        return request
+    }
+
+    private func startFallback() {
+        fallbackResolved = false; fallbackVersion = nil; fallbackSHA = nil
+        var request = publicRequest(URL(string: "https://github.com/GeekAudio/CPU-S2/releases/latest")!)
+        request.httpMethod = "HEAD"
+        latestTask = session.dataTask(with: request)
+        latestTask?.resume()
+    }
+
+    private func noUpdate() {
+        defaults.set(Date(), forKey: Self.checkedKey)
+        state = .idle
+        if manual { onMessage?("当前 v\(currentVersion)，没有可安装的新版。") }
+    }
+
+    private func beginDownload(_ candidate: ReleaseUpdate) {
+        do {
+            defaults.set(Date(), forKey: Self.checkedKey)
+            release = candidate
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("cpus2-update-\(UUID().uuidString)", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            workingDirectory = folder
+            state = .downloading(0)
+            downloadTask = session.downloadTask(with: publicRequest(candidate.assetURL))
+            downloadTask?.resume()
+        } catch { fail("无法创建更新下载目录：\(error.localizedDescription)") }
+    }
+
+    private func cancelFallbackTasks() {
+        latestTask?.cancel(); checksumTask?.cancel(); sizeTask?.cancel()
+        latestTask = nil; checksumTask = nil; sizeTask = nil
+        fallbackVersion = nil; fallbackSHA = nil; fallbackData.removeAll(keepingCapacity: false)
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,

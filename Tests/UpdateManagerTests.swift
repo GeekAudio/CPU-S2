@@ -13,6 +13,10 @@ enum UpdateManagerTests {
         testHTTPErrorIsReported()
         testOversizedFeedIsRejected()
         testTurningOffAutomaticUpdatesCancelsPendingCheck()
+        testRateLimitedAPIUsesVerifiedFallbackAndWaits()
+        testFallbackWithoutMatchingChecksumReturnsIdle()
+        testTurningOffAutomaticUpdatesCancelsEveryFallbackStage()
+        testShutdownCancelsFallbackDownload()
         testInvalidArchiveDigestNeverReachesInstallerGate()
         testVerifiedArchiveWaitsAndAutomaticOffCancelsInstallation()
 
@@ -53,7 +57,7 @@ enum UpdateManagerTests {
         fixture.manager.check(manual: true)
         wait("HTTP failure finishes") { isFailure(fixture.manager.state) }
         expect(isFailure(fixture.manager.state), "non-200 feed response fails")
-        expect(StubURLProtocol.requestCount == 1, "HTTP failure does not request an asset")
+        expect(zipRequestCount == 0, "HTTP failure does not request an app ZIP")
     }
 
     private static func testOversizedFeedIsRejected() {
@@ -65,7 +69,7 @@ enum UpdateManagerTests {
         fixture.manager.check(manual: true)
         wait("oversized feed is rejected") { isFailure(fixture.manager.state) }
         expect(isFailure(fixture.manager.state), "declared feed over 2 MiB is rejected")
-        expect(StubURLProtocol.requestCount == 1, "oversized feed does not request an asset")
+        expect(zipRequestCount == 0, "oversized feed does not request an app ZIP")
     }
 
     private static func testTurningOffAutomaticUpdatesCancelsPendingCheck() {
@@ -82,6 +86,141 @@ enum UpdateManagerTests {
         expect(StubURLProtocol.requestCount == 1, "canceled feed cannot start an asset download")
     }
 
+    private static func testRateLimitedAPIUsesVerifiedFallbackAndWaits() {
+        let fixture = Fixture()
+        defer { fixture.close() }
+        fixture.defaults.set(true, forKey: UpdateManager.automaticKey)
+        let archive = minimalValidUpdateZip()
+        let digest = SHA256.hash(data: archive).map { String(format: "%02x", $0) }.joined()
+        fixture.manager.canInstall = { fixture.installGateCalls += 1; return false }
+        fixture.manager.beforeInstall = { fixture.beforeInstallCalls += 1 }
+        fixture.manager.onWillRestart = { fixture.restartCalls += 1 }
+        StubURLProtocol.setHandler(fallbackHandler(archive: archive, digest: digest))
+
+        fixture.manager.check(manual: false)
+        wait("rate-limited API fallback verifies and prepares the release") { isWaiting(fixture.manager.state) }
+        let requests = StubURLProtocol.requests
+        expect(requests.count == 5, "rate-limited fallback performs API, release HEAD, manifest, size HEAD, and ZIP requests")
+        if requests.count == 5 {
+            expect((requests.map { ($0.httpMethod ?? "GET").uppercased() }) == ["GET", "HEAD", "GET", "HEAD", "GET"],
+                   "fallback uses HEAD for the release tag and ZIP size")
+            expect(requests[1].url?.absoluteString == "https://github.com/GeekAudio/CPU-S2/releases/latest",
+                   "fallback resolves the public latest release endpoint")
+            expect(requests[2].url?.path == "/GeekAudio/CPU-S2/releases/download/v2.5.1/SHA256SUMS.txt",
+                   "fallback reads the release checksum manifest")
+        }
+        expect(fixture.installGateCalls > 0, "verified fallback candidate checks installation readiness")
+        expect(fixture.beforeInstallCalls == 0 && fixture.restartCalls == 0,
+               "fallback update waits without exporting or restarting when installation is unavailable")
+    }
+
+    private static func testFallbackWithoutMatchingChecksumReturnsIdle() {
+        let fixture = Fixture()
+        defer { fixture.close() }
+        fixture.defaults.set(true, forKey: UpdateManager.automaticKey)
+        StubURLProtocol.setHandler { request in
+            if request.url?.host == "api.github.com" {
+                return .response(status: 403, body: Data())
+            }
+            if request.url?.path == "/GeekAudio/CPU-S2/releases/latest" {
+                return .response(status: 200, body: Data(), responseURL: fallbackTagURL)
+            }
+            if request.url?.path.hasSuffix("/SHA256SUMS.txt") == true {
+                let manifest = String(repeating: "a", count: 64) + "  CPU-S2-v2.5.1-source.zip\n"
+                return .response(status: 200, body: Data(manifest.utf8))
+            }
+            return .response(status: 404, body: Data())
+        }
+
+        fixture.manager.check(manual: false)
+        wait("fallback with no app checksum returns idle") { isIdle(fixture.manager.state) }
+        expect(StubURLProtocol.requestCount == 3, "source-only checksum manifest does not request size or ZIP")
+        expect(fixture.installGateCalls == 0 && fixture.beforeInstallCalls == 0 && fixture.restartCalls == 0,
+               "no matching app ZIP checksum cannot reach installation")
+    }
+
+    private static func testTurningOffAutomaticUpdatesCancelsEveryFallbackStage() {
+        let stages: [(name: String, method: String, count: Int)] = [
+            ("release latest HEAD", "HEAD", 2), ("checksum manifest", "GET", 3),
+            ("ZIP size HEAD", "HEAD", 4), ("ZIP download", "GET", 5)
+        ]
+        let archive = minimalValidUpdateZip()
+        let digest = SHA256.hash(data: archive).map { String(format: "%02x", $0) }.joined()
+        for stage in stages {
+            let fixture = Fixture()
+            fixture.defaults.set(true, forKey: UpdateManager.automaticKey)
+            fixture.manager.canInstall = { fixture.installGateCalls += 1; return false }
+            fixture.manager.beforeInstall = { fixture.beforeInstallCalls += 1 }
+            fixture.manager.onWillRestart = { fixture.restartCalls += 1 }
+            StubURLProtocol.setHandler(fallbackHandler(archive: archive, digest: digest,
+                                                       delayedPath: path(for: stage.name), delayedMethod: stage.method))
+            fixture.manager.check(manual: false)
+            wait("fallback reaches \(stage.name)") { StubURLProtocol.requestCount >= stage.count }
+            fixture.manager.setAutomatic(false)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+            expect(isIdle(fixture.manager.state), "turning off automatic updates cancels \(stage.name)")
+            expect(StubURLProtocol.requestCount == stage.count, "canceled \(stage.name) cannot start a later fallback request")
+            expect(fixture.installGateCalls == 0 && fixture.beforeInstallCalls == 0 && fixture.restartCalls == 0,
+                   "canceled \(stage.name) cannot install or restart")
+            fixture.close()
+        }
+    }
+
+    private static func testShutdownCancelsFallbackDownload() {
+        let fixture = Fixture()
+        defer { fixture.close() }
+        fixture.defaults.set(true, forKey: UpdateManager.automaticKey)
+        let archive = minimalValidUpdateZip()
+        let digest = SHA256.hash(data: archive).map { String(format: "%02x", $0) }.joined()
+        fixture.manager.canInstall = { fixture.installGateCalls += 1; return false }
+        fixture.manager.beforeInstall = { fixture.beforeInstallCalls += 1 }
+        fixture.manager.onWillRestart = { fixture.restartCalls += 1 }
+        StubURLProtocol.setHandler(fallbackHandler(archive: archive, digest: digest, delayedPath: zipPath, delayedMethod: "GET"))
+        fixture.manager.check(manual: false)
+        wait("fallback starts ZIP download") { StubURLProtocol.requestCount >= 5 }
+        fixture.manager.shutdown()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.35))
+        expect(StubURLProtocol.requestCount == 5, "shutdown cancels the fallback ZIP download")
+        expect(!fixture.manager.isInstalling, "shutdown does not start installation")
+        expect(fixture.installGateCalls == 0 && fixture.beforeInstallCalls == 0 && fixture.restartCalls == 0,
+               "shutdown prevents installation callbacks")
+    }
+
+    private static let fallbackTagURL = URL(string: "https://github.com/GeekAudio/CPU-S2/releases/tag/v2.5.1")!
+    private static let checksumsPath = "/GeekAudio/CPU-S2/releases/download/v2.5.1/SHA256SUMS.txt"
+    private static let zipPath = "/GeekAudio/CPU-S2/releases/download/v2.5.1/CPU-S2-v2.5.1.zip"
+
+    private static func path(for stage: String) -> String {
+        switch stage {
+        case "release latest HEAD": return "/GeekAudio/CPU-S2/releases/latest"
+        case "checksum manifest": return checksumsPath
+        case "ZIP size HEAD", "ZIP download": return zipPath
+        default: preconditionFailure("Unknown fallback stage")
+        }
+    }
+
+    private static func fallbackHandler(archive: Data, digest: String, delayedPath: String? = nil,
+                                        delayedMethod: String? = nil) -> (URLRequest) -> StubURLProtocol.StubResponse {
+        { request in
+            let path = request.url?.path ?? ""
+            let method = (request.httpMethod ?? "GET").uppercased()
+            let delay = path == delayedPath && method == delayedMethod ? 0.25 : 0
+            if request.url?.host == "api.github.com" { return .response(status: 403, body: Data()) }
+            if path == "/GeekAudio/CPU-S2/releases/latest" {
+                return .response(status: 200, body: Data(), delay: delay, responseURL: fallbackTagURL)
+            }
+            if path == checksumsPath {
+                let manifest = "\(digest)  CPU-S2-v2.5.1.zip\n"
+                return .response(status: 200, body: Data(manifest.utf8), delay: delay)
+            }
+            if path == zipPath, request.httpMethod?.uppercased() == "HEAD" {
+                return .response(status: 200, body: Data(), headers: ["Content-Length": String(archive.count)], delay: delay)
+            }
+            if path == zipPath { return .response(status: 200, body: archive, delay: delay) }
+            return .response(status: 404, body: Data())
+        }
+    }
+
     private static func testInvalidArchiveDigestNeverReachesInstallerGate() {
         let fixture = Fixture()
         defer { fixture.close() }
@@ -94,7 +233,7 @@ enum UpdateManagerTests {
         fixture.manager.check(manual: true)
         wait("bad archive digest is rejected") { isFailure(fixture.manager.state) }
         expect(isFailure(fixture.manager.state), "download with a digest mismatch fails")
-        expect(StubURLProtocol.requestCount == 2, "valid candidate starts exactly one ZIP download")
+        expect(zipRequestCount == 1, "valid candidate starts exactly one ZIP download")
         expect(fixture.installGateCalls == 0, "unverified archive never reaches install readiness")
     }
 
@@ -117,7 +256,7 @@ enum UpdateManagerTests {
 
         fixture.manager.check(manual: false)
         wait("verified ZIP waits while installation is unavailable") { isWaiting(fixture.manager.state) }
-        expect(StubURLProtocol.requestCount == 2, "verified candidate downloads one asset")
+        expect(zipRequestCount == 1, "verified candidate downloads one asset")
         expect(fixture.installGateCalls > 0, "verified candidate checks installation readiness")
         expect(fixture.beforeInstallCalls == 0, "waiting update does not export a report before install")
         expect(fixture.restartCalls == 0, "waiting update does not restart the app")
@@ -217,6 +356,10 @@ enum UpdateManagerTests {
         expect(condition(), description)
     }
 
+    private static var zipRequestCount: Int {
+        StubURLProtocol.requests.filter { $0.url?.path.hasSuffix(".zip") == true }.count
+    }
+
     private static func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
         checks += 1
         if !condition() { failures.append(message) }
@@ -270,34 +413,45 @@ private final class StubURLProtocol: URLProtocol {
         let headers: [String: String]
         let body: Data
         let delay: TimeInterval
+        let responseURL: URL?
 
         static func json(_ data: Data, delay: TimeInterval = 0) -> StubResponse {
             response(status: 200, body: data, headers: ["Content-Type": "application/json"], delay: delay)
         }
 
         static func response(status: Int, body: Data, headers: [String: String] = [:], delay: TimeInterval = 0) -> StubResponse {
+            response(status: status, body: body, headers: headers, delay: delay, responseURL: nil)
+        }
+
+        static func response(status: Int, body: Data, headers: [String: String] = [:], delay: TimeInterval = 0,
+                             responseURL: URL?) -> StubResponse {
             var values = headers
             if values["Content-Length"] == nil { values["Content-Length"] = String(body.count) }
-            return StubResponse(status: status, headers: values, body: body, delay: delay)
+            return StubResponse(status: status, headers: values, body: body, delay: delay, responseURL: responseURL)
         }
     }
 
     private static let lock = NSLock()
     private static var handler: ((URLRequest) -> StubResponse)?
     private static var requestTotal = 0
+    private static var recordedRequests: [URLRequest] = []
     static var requestCount: Int {
         lock.lock(); defer { lock.unlock() }
         return requestTotal
+    }
+    static var requests: [URLRequest] {
+        lock.lock(); defer { lock.unlock() }
+        return recordedRequests
     }
     private let stateLock = NSLock()
     private var stopped = false
 
     static func setHandler(_ value: @escaping (URLRequest) -> StubResponse) {
-        lock.lock(); handler = value; requestTotal = 0; lock.unlock()
+        lock.lock(); handler = value; requestTotal = 0; recordedRequests = []; lock.unlock()
     }
 
     static func reset() {
-        lock.lock(); handler = nil; requestTotal = 0; lock.unlock()
+        lock.lock(); handler = nil; requestTotal = 0; recordedRequests = []; lock.unlock()
     }
 
     override class func canInit(with request: URLRequest) -> Bool { request.url?.scheme == "https" }
@@ -306,7 +460,10 @@ private final class StubURLProtocol: URLProtocol {
     override func startLoading() {
         Self.lock.lock()
         let response = Self.handler?(request)
-        if response != nil { Self.requestTotal += 1 }
+        if response != nil {
+            Self.requestTotal += 1
+            Self.recordedRequests.append(request)
+        }
         Self.lock.unlock()
         guard let response = response else {
             client?.urlProtocol(self, didFailWithError: URLError(.unsupportedURL))
@@ -314,7 +471,7 @@ private final class StubURLProtocol: URLProtocol {
         }
         let deliver = { [weak self] in
             guard let self = self, !self.isStopped else { return }
-            guard let url = self.request.url,
+            guard let url = response.responseURL ?? self.request.url,
                   let http = HTTPURLResponse(url: url, statusCode: response.status,
                                              httpVersion: "HTTP/1.1", headerFields: response.headers) else {
                 self.client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))

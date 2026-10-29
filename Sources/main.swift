@@ -97,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func configureUpdates() {
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? kAppVersion
-        guard let current = UpdateVersion.parse(version) else { return }
+        guard let current = UpdateVersion.parseBundleVersion(version) else { return }
         let updates = UpdateManager(currentVersion: current)
         updater = updates
         dashboard.automaticUpdatesEnabled = updates.automaticEnabled
