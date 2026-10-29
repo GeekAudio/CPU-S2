@@ -1,0 +1,8 @@
+Intel Power Gadget Log
+"Time","CPU Frequency_0(MHz)","CPU Utilization(%)","Package Temperature_0(C)","Processor Power_0(Watt)","CPU Min Frequency_0(MHz)","Notes"
+"0.1"," 4400.0","20.5","","32.5","800","quoted, comma"
+"0.2","4800","99","61.25","","800","escaped ""quote"""
+"0.3","NaN","99","62","10","800","invalid frequency"
+"0.4","Infinity","99","62","10","800","invalid frequency"
+"0.5","4500","NaN","NaN","NaN","","missing telemetry"
+Summary

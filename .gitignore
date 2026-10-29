@@ -1,0 +1,10 @@
+.DS_Store
+._*
+build/
+备份/
+__pycache__/
+*.pyc
+# Local icon variants and historical UI captures.
+Resources/AppIcon 2.icns
+Resources/icon/*.png
+截图/
