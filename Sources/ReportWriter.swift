@@ -16,7 +16,7 @@ struct DeviceSnapshot {
         let arm = Engine.isAppleSilicon
         let translated = Engine.sysctlInt("sysctl.proc_translated") == 1
         let processor = Engine.sysctl("machdep.cpu.brand_string") ?? (arm ? "Apple Silicon" : "未知处理器")
-        let cores = CPUCoreInfo.read(processor: processor, isAppleSilicon: arm, isTranslated: translated)
+        let cores = CPUCoreInfo.read()
         return DeviceSnapshot(model: Engine.sysctl("hw.model") ?? "未知机型",
                               processor: processor,
                               system: systemDescription(),
@@ -43,8 +43,7 @@ struct DeviceSnapshot {
         return "\(cores) / \(threads)"
     }
     var description: String {
-        let hardware = "\(processor)\n\(model) · \(system)\n\(brief) · XCPM 限值 \(frequencyText(Double(ceilingMHz)))"
-        return coreInfo.map { hardware + "\n" + $0.detail } ?? hardware
+        "\(processor)\n\(model) · \(system)\n\(brief) · XCPM 限值 \(frequencyText(Double(ceilingMHz)))"
     }
 }
 
@@ -131,19 +130,10 @@ enum ReportWriter {
                         "accepted": rejection == nil, "rejectionReason": rejection as Any? ?? NSNull()]
              }]
         }
-        let coreInfo = report.device.coreInfo
         let object: [String: Any] = ["app": "CPU-S2", "version": kAppVersion, "device": ["processor": report.device.processor, "model": report.device.model,
                                        "system": report.device.system, "physicalCores": report.device.physicalCores, "logicalThreads": report.device.logicalThreads,
                                        "baseMHz": finite(report.device.baseMHz), "ceilingMHz": report.device.ceilingMHz,
-                                       "appleSilicon": report.device.isAppleSilicon, "translated": report.device.isTranslated,
-                                       "coreTopology": ["performanceCores": coreInfo?.performanceCores as Any? ?? NSNull(),
-                                                        "efficiencyCores": coreInfo?.efficiencyCores as Any? ?? NSNull(),
-                                                        "source": coreInfo?.source?.rawValue as Any? ?? NSNull(),
-                                                        "processorNumber": coreInfo?.processorNumber as Any? ?? NSNull(),
-                                                        "referenceURL": coreInfo?.referenceURL as Any? ?? NSNull(),
-                                                        "specificationThreads": coreInfo?.specificationThreads as Any? ?? NSNull(),
-                                                        "currentPhysicalCores": coreInfo?.currentPhysicalCores as Any? ?? NSNull(),
-                                                        "maximumLogicalThreads": coreInfo?.maximumLogicalThreads as Any? ?? NSNull()]],
+                                       "appleSilicon": report.device.isAppleSilicon, "translated": report.device.isTranslated],
                                    "startedAt": ISO8601DateFormatter().string(from: report.run.startedAt),
                                    "finishedAt": ISO8601DateFormatter().string(from: report.run.finishedAt),
                                    "verdict": report.verdict.rawValue, "summary": text(report), "phases": phases,

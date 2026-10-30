@@ -38,15 +38,15 @@ swiftc -Onone -swift-version 5 \
 echo "Building immutable report snapshot, CSV, and JSON regressions"
 swiftc -Onone -swift-version 5 \
     "$PROJECT_DIR/Sources/Engine.swift" "$PROJECT_DIR/Sources/CPUCoreInfo.swift" \
-    "$PROJECT_DIR/Sources/IntelCoreCatalog.swift" "$PROJECT_DIR/Sources/ReportWriter.swift" \
+    "$PROJECT_DIR/Sources/ReportWriter.swift" \
     "$TEST_DIR/ReportWriterTests.swift" "$TEST_TMP/probe-stubs.o" \
     -framework Foundation -framework IOKit -o "$TEST_TMP/report-tests"
 "$TEST_TMP/report-tests"
 
-echo "Building Intel core topology classification regressions"
+echo "Building core and thread count regressions"
 swiftc -Onone -swift-version 5 \
     "$PROJECT_DIR/Sources/Engine.swift" "$PROJECT_DIR/Sources/CPUCoreInfo.swift" \
-    "$PROJECT_DIR/Sources/IntelCoreCatalog.swift" "$PROJECT_DIR/Sources/ReportWriter.swift" \
+    "$PROJECT_DIR/Sources/ReportWriter.swift" \
     "$TEST_DIR/CPUCoreInfoTests.swift" "$TEST_TMP/probe-stubs.o" \
     -framework Foundation -framework IOKit -o "$TEST_TMP/core-info-tests"
 "$TEST_TMP/core-info-tests"

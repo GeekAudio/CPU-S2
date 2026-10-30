@@ -12,7 +12,7 @@ import tempfile
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = '2.5.1'
+VERSION = '2.5.2'
 
 
 def run(*args):

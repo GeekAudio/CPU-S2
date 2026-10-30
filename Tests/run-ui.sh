@@ -26,7 +26,7 @@ echo "Building no-load AppKit visibility and hardware field regressions"
 clang -Wall -Wextra -Werror -mmacosx-version-min=11.0 -c "$TEST_DIR/ProbeStubs.c" -o "$TEST_TMP/probe-stubs.o"
 swiftc -Onone -swift-version 5 -target "$(uname -m)-apple-macos11.0" \
     "$PROJECT_DIR/Sources/Engine.swift" "$PROJECT_DIR/Sources/CPUCoreInfo.swift" \
-    "$PROJECT_DIR/Sources/IntelCoreCatalog.swift" "$PROJECT_DIR/Sources/ReportWriter.swift" \
+    "$PROJECT_DIR/Sources/ReportWriter.swift" \
     "$PROJECT_DIR/Sources/Views.swift" "$PROJECT_DIR/Sources/ThemeControls.swift" "$PROJECT_DIR/Sources/DashboardComponents.swift" \
     "$PROJECT_DIR/Sources/DeviceInfoView.swift" "$PROJECT_DIR/Sources/SettingsView.swift" "$PROJECT_DIR/Sources/DashboardView.swift" \
     "$TEST_DIR/DashboardVisibilityTests.swift" "$TEST_TMP/probe-stubs.o" \

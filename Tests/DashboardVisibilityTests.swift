@@ -20,9 +20,7 @@ enum DashboardVisibilityTests {
     static func visible(_ view: NSView) -> Bool { !view.isHiddenOrHasHiddenAncestor }
 
     static let processor = "Intel(R) Core(TM) i9-13900K CPU @ 3.00GHz · 完整处理器名称以及较长的系统报告内容"
-    static let coreInfo = CPUCoreInfo.resolve(processor: processor, vendor: "GenuineIntel",
-                                              isAppleSilicon: false, isTranslated: false,
-                                              currentPhysicalCores: 24, maximumPhysicalCores: 24,
+    static let coreInfo = CPUCoreInfo.resolve(currentPhysicalCores: 24, maximumPhysicalCores: 24,
                                               currentLogicalThreads: 32, maximumLogicalThreads: 32)
     static let device = DeviceSnapshot(model: "MacPro7,1", processor: processor,
                                        system: "macOS 26.1.0 (25B5023a)", physicalCores: 24,
@@ -76,7 +74,7 @@ enum DashboardVisibilityTests {
     static func deviceFields(_ view: DashboardView) {
         let labels = descendants(view).compactMap { $0 as? NSTextField }
         let expected = ["机型标识符", "处理器", "系统版本与构建号", "核心 / 线程", "标称基频", "XCPM 上限",
-                        device.model, processor, device.system, "标称 8 大核 + 16 小核\n24 核 / 32 线程", "3.00 GHz", "5.80 GHz"]
+                        device.model, processor, device.system, "24 核 / 32 线程", "3.00 GHz", "5.80 GHz"]
         for text in expected {
             expect(labels.contains { visible($0) && $0.stringValue == text }, "visible complete hardware field: \(text)")
         }
@@ -86,20 +84,20 @@ enum DashboardVisibilityTests {
             expect(cpu.isSelectable, "processor name can be copied in full")
         }
         if let topology = labels.first(where: { $0.stringValue == device.coreInfo?.display }) {
-            expect(topology.isSelectable, "full two-line Intel topology remains selectable")
+            expect(topology.isSelectable, "total core/thread count remains selectable")
             expect(topology.lineBreakMode == .byWordWrapping && topology.maximumNumberOfLines == 0,
-                   "two-line topology does not truncate on the narrow layout")
-            expect(topology.toolTip?.contains("型号规格") == true && topology.toolTip?.contains("intel.com") == true,
-                   "the visible specification shows its source and enabled-core caveat on hover")
+                   "core/thread count wraps rather than truncating on the narrow layout")
+            expect(topology.toolTip?.contains("最大物理核") == true,
+                   "the visible system counts include current/maximum detail on hover")
         } else {
-            expect(false, "full Intel core topology remains visible")
+            expect(false, "total core/thread count remains visible")
         }
     }
 
     static func settingsLayout() {
         let source = NSPopUpButton()
         source.addItems(withTitles: ["内建探针估算", "已有 PowerLog（兼容模式）"])
-        let summary = "Intel(R) Core(TM) i9-13900K CPU @ 3.00GHz\nMacPro7,1 · macOS 26.1.0 (25B5023a)\n标称 8 大核 + 16 小核 · 24 核 / 32 线程 · 标称基频 3.00 GHz"
+        let summary = "Intel(R) Core(TM) i9-13900K CPU @ 3.00GHz\nMacPro7,1 · macOS 26.1.0 (25B5023a)\n24 核 / 32 线程 · 标称基频 3.00 GHz"
         var checkUpdatesCalled = false
         var automaticUpdateValue: Bool?
         let settings = SettingsViewController(

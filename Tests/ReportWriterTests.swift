@@ -83,16 +83,13 @@ enum ReportWriterTests {
         var liveDevice = DeviceSnapshot(model: "SnapshotMac,1", processor: "Captured CPU", system: "Captured system",
                                         physicalCores: 12, logicalThreads: 20, baseMHz: 2400, ceilingMHz: 2500,
                                         isAppleSilicon: false, isTranslated: false,
-                                        coreInfo: CPUCoreInfo.resolve(processor: "Intel Core i7-12700K", vendor: "GenuineIntel",
-                                                                      isAppleSilicon: false, isTranslated: false,
-                                                                      currentPhysicalCores: 8, maximumPhysicalCores: 12,
+                                        coreInfo: CPUCoreInfo.resolve(currentPhysicalCores: 8, maximumPhysicalCores: 12,
                                                                       currentLogicalThreads: 20, maximumLogicalThreads: 20))
         var liveRun = Engine.RunResult(phases: phases, freqsPerPhase: phases.map { $0.validSamples.map(\.freq) },
                                        sampler: .builtin, cancelled: false,
                                        startedAt: Date(timeIntervalSince1970: 1_700_000_000),
                                        finishedAt: Date(timeIntervalSince1970: 1_700_000_030))
         let saved = DetectionReport(run: liveRun, device: liveDevice)
-        let capturedCoreReference = liveDevice.coreInfo?.referenceURL
         let text = ReportWriter.text(saved)
         let csv = ReportWriter.csv(saved)
         let jsonData = try ReportWriter.json(saved)
@@ -118,8 +115,8 @@ enum ReportWriterTests {
         expect(savedJSONAfterCapture == jsonData, "later capture/settings changes cannot alter saved JSON")
         expect(text.contains("Captured CPU") && !text.contains("Later CPU") && !text.contains("新检测进行中"),
                "historical text retains only the captured hardware and run state")
-        expect(text.contains("标称 8 大核 + 4 小核") && text.contains("12 核 / 20 线程"),
-               "historical text retains the captured P/E specification and system thread count")
+        expect(text.contains("12 核 / 20 线程") && !text.contains("大核") && !text.contains("小核"),
+               "historical text retains total core/thread counts without core-type details")
         expect(saved.validCount == 5 && saved.droppedCount == 6, "fixture has five accepted and six rejected observations")
 
         let parsed = try JSONSerialization.jsonObject(with: jsonData)
@@ -131,16 +128,11 @@ enum ReportWriterTests {
         expect(jsonPhases.count == 3, "JSON contains all three phases")
         expect(json["summary"] as? String == text, "JSON summary equals the standalone text export")
         expect(device["model"] as? String == "SnapshotMac,1", "JSON uses captured hardware")
-        let coreTopology = device["coreTopology"] as? [String: Any]
-        expect((coreTopology?["performanceCores"] as? NSNumber)?.intValue == 8 &&
-               (coreTopology?["efficiencyCores"] as? NSNumber)?.intValue == 4,
-               "JSON exports the captured P/E specification")
-        expect(coreTopology?["source"] as? String == "intelSpecification" &&
-               coreTopology?["referenceURL"] as? String == capturedCoreReference,
-               "JSON preserves the source and Intel reference in the immutable snapshot")
+        expect(device["coreTopology"] == nil,
+               "JSON omits the removed core-type topology object")
         expect((device["physicalCores"] as? NSNumber)?.intValue == 12 &&
                (device["logicalThreads"] as? NSNumber)?.intValue == 20,
-               "JSON reports system hardware totals independently of the P/E specification")
+               "JSON reports total system cores and threads")
         expect(Set(json.keys) == Set(["app", "version", "device", "startedAt", "finishedAt", "verdict", "summary", "phases", "bins"]),
                "top-level JSON contains only the detection report schema")
 
